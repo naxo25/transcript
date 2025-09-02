@@ -1,5 +1,5 @@
 Flask==3.0.0
 openai-whisper==20231117
-yt-dlp==2024.1.2
+yt-dlp
 ffmpeg-python==0.2.0
 gunicorn==21.2.0
