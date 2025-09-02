@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: whisper-transcription-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11
+    # Plan gratuito o starter
+    plan: free
+    # Configuración de salud
+    healthCheckPath: /health
+    # Configuración de autoscaling (solo en planes pagos)
+    # scaling:
+    #   minInstances: 1
+    #   maxInstances: 3
+    #   targetMemoryPercent: 60
+    #   targetCPUPercent: 60

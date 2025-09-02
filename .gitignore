@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+VENV/
+.venv
+
+# Archivos de transcripción y media
+*.mp4
+*.mp3
+*.wav
+*.txt
+transcripcion.txt
+video_descargado.mp4
+audio.wav
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+
+# Build
+build/
+dist/
+*.egg-info/
