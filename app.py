@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 import whisper
 import yt_dlp
 import ffmpeg
@@ -7,16 +7,44 @@ import tempfile
 import threading
 import uuid
 from datetime import datetime
+import gc  # Garbage collector para limpiar memoria
 
 app = Flask(__name__)
 
-# Cargar modelo al inicio (para mejor rendimiento)
-print("🚀 Cargando modelo Whisper...")
-model = whisper.load_model("base")
-print("✅ Modelo cargado")
+# OPTIMIZACIÓN 1: Usar modelo TINY (39MB) en lugar de BASE (74MB)
+# Configuración del modelo desde variable de entorno
+MODEL_NAME = os.environ.get('WHISPER_MODEL', 'tiny')
+print(f"🚀 Usando modelo Whisper: {MODEL_NAME}")
 
-# Diccionario para almacenar el estado de las tareas
+# OPTIMIZACIÓN 2: Lazy loading - NO cargar el modelo al inicio
+model = None
+model_lock = threading.Lock()
+
+def get_model():
+    """Carga el modelo solo cuando se necesita"""
+    global model
+    if model is None:
+        with model_lock:
+            if model is None:  # Double-check
+                print(f"📦 Cargando modelo {MODEL_NAME}...")
+                model = whisper.load_model(MODEL_NAME)
+                print("✅ Modelo cargado")
+    return model
+
+# Diccionario para almacenar el estado de las tareas (máximo 10 tareas en memoria)
 tasks = {}
+MAX_TASKS = 10
+
+def cleanup_old_tasks():
+    """Limpia tareas antiguas para liberar memoria"""
+    global tasks
+    if len(tasks) > MAX_TASKS:
+        # Ordenar por fecha de creación y mantener solo las últimas MAX_TASKS
+        sorted_tasks = sorted(tasks.items(), 
+                            key=lambda x: x[1].get('created_at', ''), 
+                            reverse=True)
+        tasks = dict(sorted_tasks[:MAX_TASKS])
+        gc.collect()  # Forzar recolección de basura
 
 def transcribe_video(task_id, url):
     """Función para transcribir video en background"""
@@ -29,28 +57,50 @@ def transcribe_video(task_id, url):
             video_file = os.path.join(temp_dir, f"{task_id}_video.mp4")
             audio_file = os.path.join(temp_dir, f"{task_id}_audio.wav")
             
-            # 1. Descargar video
+            # 1. Descargar video con límite de calidad
             tasks[task_id]['message'] = 'Descargando video...'
             ydl_opts = {
                 'outtmpl': video_file,
                 'quiet': True,
                 'no_warnings': True,
+                # OPTIMIZACIÓN 3: Limitar calidad del video para reducir tamaño
+                'format': 'worst[ext=mp4]/worst',  # Menor calidad = menos memoria
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
             
-            # 2. Extraer audio
+            # 2. Extraer audio con compresión
             tasks[task_id]['message'] = 'Extrayendo audio...'
+            # OPTIMIZACIÓN 4: Reducir calidad de audio para ahorrar memoria
             ffmpeg.input(video_file).output(
                 audio_file,
-                ac=1,
-                ar='16000'
+                ac=1,      # Mono
+                ar='16000', # 16kHz (mínimo para Whisper)
+                ab='32k'    # Bitrate bajo
             ).run(overwrite_output=True, quiet=True, capture_stdout=True, capture_stderr=True)
+            
+            # Eliminar video inmediatamente para liberar memoria
+            if os.path.exists(video_file):
+                os.remove(video_file)
             
             # 3. Transcribir
             tasks[task_id]['message'] = 'Transcribiendo audio...'
-            result = model.transcribe(audio_file, language="es")
+            
+            # Obtener modelo (lazy loading)
+            current_model = get_model()
+            
+            # OPTIMIZACIÓN 5: Opciones de transcripción para menor uso de memoria
+            result = current_model.transcribe(
+                audio_file, 
+                language="es",
+                fp16=False,  # No usar FP16 (puede causar problemas en CPU)
+                verbose=False,
+                # Opciones para reducir memoria:
+                best_of=1,  # Solo 1 beam search en lugar de 5
+                beam_size=1,  # Reducir beam size
+                temperature=0  # Sin sampling múltiple
+            )
             
             # 4. Guardar resultado
             tasks[task_id]['status'] = 'completed'
@@ -58,26 +108,73 @@ def transcribe_video(task_id, url):
             tasks[task_id]['completed_at'] = datetime.now().isoformat()
             tasks[task_id]['message'] = 'Transcripción completada'
             
+            # OPTIMIZACIÓN 6: Limpiar memoria después de transcribir
+            del result
+            gc.collect()
+            
+            # Limpiar tareas antiguas
+            cleanup_old_tasks()
+            
     except Exception as e:
         tasks[task_id]['status'] = 'error'
         tasks[task_id]['error'] = str(e)
         tasks[task_id]['message'] = f'Error: {str(e)}'
+        
+        # Limpiar memoria en caso de error
+        gc.collect()
 
 @app.route('/')
 def home():
+    # Información sobre memoria
+    memory_info = {
+        "model": MODEL_NAME,
+        "model_loaded": model is not None,
+        "active_tasks": len(tasks)
+    }
+    
     return jsonify({
-        "message": "API de Transcripción con Whisper",
+        "message": "API de Transcripción con Whisper (Optimizada)",
+        "memory_optimization": memory_info,
         "endpoints": {
             "/transcribe": "POST - Iniciar transcripción (body: {url: 'video_url'})",
             "/status/<task_id>": "GET - Ver estado de transcripción",
             "/result/<task_id>": "GET - Obtener resultado de transcripción",
-            "/health": "GET - Estado del servicio"
+            "/health": "GET - Estado del servicio",
+            "/clear-cache": "POST - Limpiar caché y memoria"
         }
     })
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "healthy", "model_loaded": model is not None})
+    return jsonify({
+        "status": "healthy", 
+        "model": MODEL_NAME,
+        "model_loaded": model is not None,
+        "tasks_in_memory": len(tasks)
+    })
+
+@app.route('/clear-cache', methods=['POST'])
+def clear_cache():
+    """Endpoint para limpiar memoria manualmente"""
+    global model, tasks
+    
+    # Limpiar modelo
+    if model is not None:
+        del model
+        model = None
+    
+    # Limpiar tareas completadas
+    tasks = {k: v for k, v in tasks.items() 
+             if v.get('status') not in ['completed', 'error']}
+    
+    # Forzar recolección de basura
+    gc.collect()
+    
+    return jsonify({
+        "message": "Memoria limpiada",
+        "model_unloaded": True,
+        "remaining_tasks": len(tasks)
+    })
 
 @app.route('/transcribe', methods=['POST'])
 def transcribe():
@@ -90,6 +187,10 @@ def transcribe():
         url = data['url']
         task_id = str(uuid.uuid4())
         
+        # Verificar límite de tareas
+        if len(tasks) >= MAX_TASKS * 2:
+            cleanup_old_tasks()
+        
         # Inicializar tarea
         tasks[task_id] = {
             'id': task_id,
@@ -101,13 +202,15 @@ def transcribe():
         
         # Iniciar transcripción en background
         thread = threading.Thread(target=transcribe_video, args=(task_id, url))
+        thread.daemon = True  # Daemon thread para que no bloquee el shutdown
         thread.start()
         
         return jsonify({
             "task_id": task_id,
             "status": "pending",
             "message": "Transcripción iniciada",
-            "check_status": f"/status/{task_id}"
+            "check_status": f"/status/{task_id}",
+            "model": MODEL_NAME
         }), 202
         
     except Exception as e:
@@ -147,57 +250,23 @@ def get_result(task_id):
             "status": task['status']
         }), 400
     
-    return jsonify({
+    # Preparar respuesta
+    response = jsonify({
         "task_id": task_id,
         "transcription": task['result'],
         "url": task['url'],
         "created_at": task['created_at'],
         "completed_at": task['completed_at']
     })
-
-@app.route('/transcribe-sync', methods=['POST'])
-def transcribe_sync():
-    """Endpoint síncrono para transcripciones rápidas (no recomendado para videos largos)"""
-    try:
-        data = request.get_json()
-        
-        if not data or 'url' not in data:
-            return jsonify({"error": "Se requiere 'url' en el body"}), 400
-        
-        url = data['url']
-        
-        with tempfile.TemporaryDirectory() as temp_dir:
-            video_file = os.path.join(temp_dir, "video.mp4")
-            audio_file = os.path.join(temp_dir, "audio.wav")
-            
-            # Descargar video
-            ydl_opts = {
-                'outtmpl': video_file,
-                'quiet': True,
-                'no_warnings': True,
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-            
-            # Extraer audio
-            ffmpeg.input(video_file).output(
-                audio_file,
-                ac=1,
-                ar='16000'
-            ).run(overwrite_output=True, quiet=True, capture_stdout=True, capture_stderr=True)
-            
-            # Transcribir
-            result = model.transcribe(audio_file, language="es")
-            
-            return jsonify({
-                "transcription": result["text"],
-                "url": url
-            })
-            
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    
+    # OPTIMIZACIÓN 7: Opción para limpiar resultado después de entregarlo
+    # (descomenta si quieres liberar memoria agresivamente)
+    # del tasks[task_id]['result']
+    # tasks[task_id]['result'] = "Resultado ya fue entregado"
+    
+    return response
 
 if __name__ == '__main__':
+    # OPTIMIZACIÓN 8: Solo 1 worker para reducir memoria
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, threaded=True)

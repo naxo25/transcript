@@ -19,5 +19,9 @@ COPY app.py .
 # Exponer el puerto (Render usa PORT env variable)
 EXPOSE 10000
 
-# Comando para ejecutar la aplicación con gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--timeout", "120", "--workers", "1", "app:app"]
+# Variables de entorno para optimización
+ENV WHISPER_MODEL=tiny
+ENV PYTHONUNBUFFERED=1
+
+# Comando optimizado: 1 worker, 1 thread, timeout largo
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--timeout", "300", "--workers", "1", "--threads", "1", "--worker-class", "sync", "app:app"]
