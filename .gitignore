@@ -14,7 +14,6 @@ VENV/
 *.mp4
 *.mp3
 *.wav
-*.txt
 transcripcion.txt
 video_descargado.mp4
 audio.wav
