@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # AGREGAR ESTA LÍNEA
 import whisper
 import yt_dlp
 import ffmpeg
@@ -10,6 +11,7 @@ from datetime import datetime
 import gc  # Garbage collector para limpiar memoria
 
 app = Flask(__name__)
+CORS(app, origins=['http://localhost:3000', 'https://*'])
 
 # OPTIMIZACIÓN 1: Usar modelo TINY (39MB) en lugar de BASE (74MB)
 # Configuración del modelo desde variable de entorno
