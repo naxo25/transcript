@@ -59,12 +59,15 @@ def transcribe_video(task_id, url):
             
             # 1. Descargar video con límite de calidad
             tasks[task_id]['message'] = 'Descargando video...'
+            # En la función transcribe_video, en ydl_opts:
             ydl_opts = {
                 'outtmpl': video_file,
                 'quiet': True,
                 'no_warnings': True,
-                # OPTIMIZACIÓN 3: Limitar calidad del video para reducir tamaño
-                'format': 'worst[ext=mp4]/worst',  # Menor calidad = menos memoria
+                'format': 'worst[ext=mp4]/worst',
+                # AGREGAR ESTOS LÍMITES:
+                'max_filesize': 50000000,  # Máximo 50MB
+                'socket_timeout': 30,       # Timeout de descarga
             }
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
